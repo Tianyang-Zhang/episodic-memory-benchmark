@@ -5,6 +5,12 @@ import numpy as np
 from epbench.src.generation.qa_templates import EpisodicMemoryTemplates
 from epbench.src.generation.generate_1_events_and_meta_events import unused_universe_func
 
+# Stable mapping from template (cue, retrieval_type, get) -> q_idx (0..35)
+_TEMPLATE_Q_IDX_LOOKUP = {
+    (t["cue"], t["retrieval_type"], t["get"]): idx
+    for idx, t in enumerate(EpisodicMemoryTemplates().templates)
+}
+
 def get_tsec_given_question(chapter_idx, df_groundtruth, unused_universe, changed = set(), existing_change = True):
     # if changed=set(), it is simply the (t,s,e,c) for the current question (do not use {}, which is a dict and not a set)
     # changed can be e.g. changed = {'date', 'location'}, only used for generating questions with empty answers
@@ -123,13 +129,18 @@ def retrieve_dataframe_for_single_question(chapter_idx, df_groundtruth, unused_u
     # Generate all questions for the selected chapter
     em_templates = EpisodicMemoryTemplates()
     questions = em_templates.generate_all_questions(t=t, s=s, ent=e, c=c)
-    nb_questions = len(questions)
     cues = [x['cue'] for x in questions]
     cue_completed = [x['cue_completed'] for x in questions]
     retrieval_types = [x['retrieval_type'] for x in questions]
     gets = [x['get'] for x in questions]
     questions = [x['question'] for x in questions] # /!\ erase `questions` variable
-    q_idx = [x for x in range(nb_questions)]
+    # NOTE: q_idx is the index of the question in the EpisodicMemoryTemplates().templates list
+    # This is used to ensure that the q_idx is consistent across different runs
+    q_idx = [
+        _TEMPLATE_Q_IDX_LOOKUP[(cue, retrieval_type, get)]
+        for cue, retrieval_type, get in zip(cues, retrieval_types, gets)
+    ]
+    nb_questions = len(q_idx)
 
     df_cur = pd.DataFrame({'chapter': df_gt_cur['chapter'],
                     'date': df_gt_cur['date'],
@@ -395,9 +406,16 @@ def filtering_built_qa_func(df_qa, target_number_of_questions_per_bin_per_q_idx 
     df_qa['bins_items_correct_answer'] = pd.cut(df_qa['n_chapters_correct_answer'], bins=bins_count, include_lowest=True, right=False, labels=labels_count)
 
     # filtering at random (`target_number_of_questions_per_bin_per_q_idx` if possible, or the maximum number per (q_idx, bin) group otherwise)
+    # Sort by multiple columns to ensure deterministic ordering before using .head()
+    # Primary: cue_completed, Secondary: n_chapters_correct_answer (descending to favor larger sets), Tertiary: question (for tie-breaking)
     df_qa_filtered = (df_qa
+                    # NOTE: original (jgong)
                     .sort_values(by='n_chapters_correct_answer', ascending=False) # favorise larger sets
                     .sort_values(by='cue_completed')
+                    # NOTE: change to sort by cue_completed, n_chapters_correct_answer, question (jgong)
+                    # .sort_values(by=['cue_completed', 'n_chapters_correct_answer', 'question'], 
+                    #             ascending=[True, False, True])
+                    # .sort_values(by='cue_completed')
                     #.groupby(['cue', 'bins_items_correct_answer'], observed=True, sort=False)
                     .groupby(['q_idx', 'bins_items_correct_answer'], observed=True, sort=False)
                     #.apply(lambda x: x.sample(min(len(x), target_number_of_questions_per_bin_per_q_idx), replace=False, random_state=seed), include_groups=False)

@@ -28,6 +28,9 @@ def generate_paragraphs_func(
     if iterations is None:
         iterations = [0]*prompt_parameters['nb_events']
 
+    # Initialize model variable to None - will be created lazily when needed
+    my_model = None
+    
     generated_paragraphs = []
     for event_index in range(len(prompts)):
         user_prompt = prompts[event_index]
@@ -36,9 +39,7 @@ def generate_paragraphs_func(
         if not data_paragraphs_filepath.is_file():
             print("Generate " + str(event_index) + "/" + str(len(prompts)-1))
             # only initialize the model if needed, and only initialize it once 
-            try:
-                my_model
-            except NameError:
+            if my_model is None:
                 my_model = ModelsWrapper(model_name, config)
             # generate the content
             out = my_model.generate(user_prompt = user_prompt, system_prompt = system_prompt, max_new_tokens = max_new_tokens)

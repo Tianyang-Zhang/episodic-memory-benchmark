@@ -5,7 +5,20 @@ import numpy as np
 
 def extract_groups(df, nb_events, relative_to, metric = 'f1_score_lenient'):
 
-    df_sliced = df[(df['book_nb_events'] == nb_events) & (df['book_model_name'] == 'claude-3-5-sonnet-20240620')]
+    # NOTE: original (jgong)
+    # df_sliced = df[(df['book_nb_events'] == nb_events) & (df['book_model_name'] == 'claude-3-5-sonnet-20240620')]
+    # NOTE: change to use the book_model_name from the dataframe (jgong)
+    # Filter by nb_events and get the book_model_name from the dataframe (not hardcoded)
+    df_filtered = df[df['book_nb_events'] == nb_events]
+    if len(df_filtered) == 0:
+        raise ValueError(f'No results found for book_nb_events={nb_events}')
+    
+    # Get the book_model_name from the first row (all rows should have the same book_model_name for same nb_events)
+    book_model_name = df_filtered.iloc[0]['book_model_name']
+    df_sliced = df_filtered[df_filtered['book_model_name'] == book_model_name]
+    
+    if len(df_sliced) == 0:
+        raise ValueError(f'No results found for book_nb_events={nb_events} and book_model_name={book_model_name}')
 
     #print(f"(using the book with {df_sliced.iloc[0]['book_nb_events']} events)")
 

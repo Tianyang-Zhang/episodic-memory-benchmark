@@ -1,3 +1,4 @@
+# flake8: noqa
 # Events, meta-events, and prompting
 from epbench.src.generation.generate_1_events_and_meta_events import generate_and_export_events_and_meta_events_func
 # Generate (or load existing) events
@@ -8,6 +9,8 @@ from epbench.src.generation.generate_3_secondary_entities import get_final_sampl
 from epbench.src.generation.generate_4_books import book_indexing_func, build_chapter
 # Build questions
 from epbench.src.generation.qa_generation import build_qa_func, checking_widespreadness_of_questions
+# Logging
+import logging
 # IO
 import pandas as pd
 import pyarrow
@@ -25,6 +28,8 @@ from epbench.src.generation.generate_1_events_and_meta_events import generate_un
 # Plotting
 from pathlib import Path
 from epbench.src.plots.plotting_functions import plotting_ecdf
+
+logger = logging.getLogger(__name__)
 
 class BenchmarkGenerationWrapper:
     def __init__(
@@ -44,8 +49,8 @@ class BenchmarkGenerationWrapper:
             book_parameters = {
                 'indexing': 'default'
             },
-            data_folder = '/repo/to/git/main/epbench/data',
-            env_file = '/repo/to/git/main/.env',
+            data_folder = '/Users/jinggong/memmachine/episodic-memory-benchmark/epbench/data',
+            env_file = '/Users/jinggong/memmachine/episodic-memory-benchmark/.env',
             verbose = True,
             rechecking = True
             ):
@@ -148,45 +153,60 @@ class BenchmarkGenerationWrapper:
     def __end2end(
             self,
             prompt_parameters = {
-                'nb_events': 20, 
+                'nb_events': 10, 
                 'name_universe': 'default', 
                 'name_styles': 'default', 
                 'seed': 0, 
                 'distribution_events': {'name': 'geometric', 'param': 0.1}
                 },
             model_parameters = {
-                'model_name': 'claude-3-5-sonnet-20240620', # 'gpt-4o-2024-05-13'
+                'model_name': 'gpt-4o-2024-05-13', # 'gpt-4o-2024-05-13'
                 'max_new_tokens': 4096, 
                 'itermax': 10 # itermax is integer, 1 for a single try
                 },
             book_parameters = {
                 'indexing': 'default'
                 },
-            data_folder = '/repo/to/git/main/epbench/data',
-            env_file = '/repo/to/git/main/.env',
+            data_folder = '/Users/jinggong/memmachine/episodic-memory-benchmark/epbench/data',
+            env_file = '/Users/jinggong/memmachine/episodic-memory-benchmark/.env',
             verbose = True,
             rechecking = True):
 
+        # 1) Generate events/meta-events and paragraphs
         events, meta_events = generate_and_export_events_and_meta_events_func(prompt_parameters, data_folder, rechecking)
         generated_paragraphs, has_verif_vector = iterative_generate_paragraphs_func(prompt_parameters, model_parameters, data_folder, env_file, verbose, rechecking)
-        d = get_final_samples(prompt_parameters, model_parameters, data_folder, rechecking)
+        d = get_final_samples(prompt_parameters, model_parameters, data_folder, rechecking)  # post-processed events/paragraphs
         
+        # 2) Select and order chapters, then build the book
         idx_chapters = book_indexing_func(d, book_parameters) # selection of the events selected as chapter and their ordering
         book, df_book_groundtruth = build_chapter(idx_chapters, d)
 
         nb_chapters = len(df_book_groundtruth['chapter'].values)
         nb_tokens = count_tokens(book)
 
+        if verbose:
+            logger.info("Events generated: %d | Meta-events: %d", len(events), len(meta_events))
+            logger.info("Paragraphs generated: %d | Passed verification: %d", len(generated_paragraphs), sum(has_verif_vector))
+            logger.info("Selected chapters: %d | Token count (book): %d", nb_chapters, nb_tokens)
+
         if prompt_parameters['nb_events'] <= 1000:
             nb_chapters_max = 200
         else:
             nb_chapters_max = 2000
 
+        # 3) Build or load QA data and groundtruth artifacts
         book_dirpath = book_dirpath_func(nb_chapters, nb_tokens, data_folder, prompt_parameters, model_parameters, book_parameters)
         if (not book_dirpath.is_dir()) or rechecking: # book does not exist, or we want to recheck
+            # NOTE: build_qa_func is the function that builds the QA dataframe
+            logger.info("Building QA dataframe with prompt_parameters: %s and nb_chapters_max: %d", prompt_parameters, nb_chapters_max)
             df_qa = build_qa_func(df_book_groundtruth, events, prompt_parameters, nb_chapters_max)
+            # NOTE: jgong, ordering to stabilize q_idx comparisons
+            # Canonical ordering to stabilize q_idx comparisons
+            df_qa = df_qa.sort_values(by=["q_idx", "question"]).reset_index(drop=True)
             df_qa['correct_answer_detailed'] = df_qa['correct_answer_detailed'].apply(str) # necessary to save into a parquet
             df_qa_debug_widespreadness = checking_widespreadness_of_questions(df_qa)
+            if verbose:
+                logger.info("QA generated: %d rows | Max chapters considered: %d", len(df_qa), nb_chapters_max)
 
         # io begin: load and save, to ensure that all the time the same book and qa
         book_filepath = book_dirpath / "book.json"
@@ -199,13 +219,66 @@ class BenchmarkGenerationWrapper:
             df_book_groundtruth_existing = pd.read_parquet(df_book_groundtruth_filepath, engine='pyarrow')
             df_qa_existing = pd.read_parquet(df_qa_filepath, engine='pyarrow')
             df_qa_debug_widespreadness_existing = pd.read_parquet(df_qa_debug_widespreadness_filepath, engine='pyarrow')
+            # NOTE: jgong, ordering to stabilize q_idx comparisons
+            # Re-apply canonical ordering to align with regenerated df_qa
+            df_qa_existing = df_qa_existing.sort_values(by=["q_idx", "question"]).reset_index(drop=True)
+            if verbose:
+                logger.info("Reusing cached book/QAs at %s", book_dirpath)
             if rechecking: # book does exist, but we want to recheck
                 assert book_existing == book, 'different book produced' 
                 pd.testing.assert_frame_equal(df_book_groundtruth_existing, df_book_groundtruth)
                 # columns that cannot be compared directly are discarded
+                # NOTE: original (jgong)
                 my_cols = ['correct_answer', 'correct_answer_chapters', 'debug_changed']
-                pd.testing.assert_frame_equal(df_qa_existing.drop(my_cols, axis = 1), df_qa.drop(my_cols, axis = 1))
-                pd.testing.assert_frame_equal(df_qa_debug_widespreadness_existing, df_qa_debug_widespreadness)
+                # NOTE: change to exclude q_idx and debug_level_2 (jgong)
+                # q_idx is excluded because it can vary when the same question appears from different chapters
+                # and gets grouped (the 'first' q_idx is taken, which depends on order)
+                # debug_level_2 is excluded because it's created by reset_index() after groupby and represents
+                # the original index position, which can vary between runs even with the same seed
+                # my_cols = ['correct_answer', 'correct_answer_chapters', 'debug_changed', 'q_idx', 'debug_level_2']
+                try:
+                    pd.testing.assert_frame_equal(df_qa_existing.drop(my_cols, axis = 1), df_qa.drop(my_cols, axis = 1))
+                except AssertionError as exc:
+                    if verbose:
+                        diff_col = None
+                        diff_preview = None
+                        try:
+                            # find first differing column and show a few differing rows
+                            for col in df_qa_existing.drop(my_cols, axis=1).columns:
+                                if not df_qa_existing[col].equals(df_qa[col]):
+                                    diff_col = col
+                                    diff_mask = df_qa_existing[col] != df_qa[col]
+                                    diff_preview = pd.DataFrame({
+                                        "existing": df_qa_existing.loc[diff_mask, col].head(),
+                                        "new": df_qa.loc[diff_mask, col].head()
+                                    })
+                                    break
+                        except Exception:
+                            diff_preview = None
+                        # NOTE: shapes means number of rows and columns
+                        logger.error(
+                            "QA dataframe mismatch. Shapes existing/new: %s vs %s. Columns existing/new: %s vs %s. First rows diff message: %s. First differing column: %s. Sample diffs:\n%s",
+                            df_qa_existing.shape,
+                            df_qa.shape,
+                            list(df_qa_existing.drop(my_cols, axis=1).columns),
+                            list(df_qa.drop(my_cols, axis=1).columns),
+                            str(exc).splitlines()[0] if str(exc) else "n/a",
+                            diff_col,
+                            diff_preview if diff_preview is not None else "n/a",
+                        )
+                    raise
+                try:
+                    pd.testing.assert_frame_equal(df_qa_debug_widespreadness_existing, df_qa_debug_widespreadness)
+                except AssertionError as exc:
+                    if verbose:
+                        logger.error(
+                            "QA widespreadness mismatch. Shapes existing/new: %s vs %s. Columns: %s. First rows diff message: %s",
+                            df_qa_debug_widespreadness_existing.shape,
+                            df_qa_debug_widespreadness.shape,
+                            list(df_qa_debug_widespreadness.columns),
+                            str(exc).splitlines()[0] if str(exc) else "n/a",
+                        )
+                    raise
             df_qa = df_qa_existing
             df_qa_debug_widespreadness = df_qa_debug_widespreadness_existing
         else:
@@ -215,6 +288,8 @@ class BenchmarkGenerationWrapper:
             df_book_groundtruth.to_parquet(df_book_groundtruth_filepath)
             df_qa.to_parquet(df_qa_filepath)
             df_qa_debug_widespreadness.to_parquet(df_qa_debug_widespreadness_filepath)
+            if verbose:
+                logger.info("Saved new book and QA artifacts to %s", book_dirpath)
 
         # revert the apply(str) applied on column 'correct_answer_detailed' that is necessary to save into a parquet
         df_qa['correct_answer_detailed'] = [ast.literal_eval(x) for x in df_qa['correct_answer_detailed']]

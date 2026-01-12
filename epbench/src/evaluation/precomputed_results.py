@@ -69,7 +69,18 @@ def get_precomputed_results(experiments,
             else:
                 ValueError('For `gpt-4o-2024-05-13`, only done with 20 and 200 target events')
         else:
-            raise ValueError('Only books generated with `claude-3-5-sonnet-20240620` and `gpt-4o-2024-05-13`')
+            # NOTE: original (jgong)
+            # raise ValueError('Only books generated with `claude-3-5-sonnet-20240620` and `gpt-4o-2024-05-13`')
+            # NOTE: change to use the model name from book_model_name (jgong)
+            # Try to find benchmark in all_benchmarks using a generated key
+            # Format: benchmark_{model_name}_default_{nb_events} (using model name as-is, matching quickstart.py)
+            benchmark_key = f'benchmark_{df_cur["book_model_name"]}_default_{df_cur["book_nb_events"]}'
+            if benchmark_key in all_benchmarks:
+                my_benchmark = all_benchmarks[benchmark_key]
+            else:
+                raise ValueError(f'Book model `{df_cur["book_model_name"]}` not supported. '
+                               f'Only books generated with `claude-3-5-sonnet-20240620`, `gpt-4o-2024-05-13`, '
+                               f'or provide benchmark in all_benchmarks with key `{benchmark_key}`')
 
         if df_cur['answering_kind'] == 'prompting':
             answering_parameters = {'kind': df_cur['answering_kind'],
