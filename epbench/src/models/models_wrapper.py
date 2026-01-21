@@ -1,16 +1,49 @@
 import requests
 import json
+import os
 
 class ModelsWrapper:
     def __init__(self, model_name = "gpt-4o-mini-2024-07-18", config = {}):           
         assert model_name is not None, f"model_name is required, got: {model_name}"
+        print(f"Initializing ModelsWrapper for model: {model_name}")
         self.model_name = model_name
+        
+        # Set proxy environment variables if PROXY is configured
+        # httpx 0.28.0+ doesn't accept proxies as a keyword argument,
+        # so we use environment variables instead
+        # Only set if PROXY is not empty and has an 'http' key
+        if config.PROXY and isinstance(config.PROXY, dict) and config.PROXY.get('http'):
+            os.environ['HTTP_PROXY'] = config.PROXY.get('http')
+            if config.PROXY.get('https'):
+                os.environ['HTTPS_PROXY'] = config.PROXY.get('https')
+            else:
+                os.environ['HTTPS_PROXY'] = config.PROXY.get('http')
+        else:
+            # Explicitly unset proxy environment variables if not configured
+            # to prevent SDKs from trying to use proxies
+            os.environ.pop('HTTP_PROXY', None)
+            os.environ.pop('HTTPS_PROXY', None)
+        
         if ("gpt-4o" in model_name) or ("o1" in model_name) or ("o3" in model_name) or ("o4" in model_name) or ("gpt-" in model_name):
             from openai import OpenAI
-            self.client = OpenAI(api_key=config.OPENAI_API_KEY)
+            import httpx
+            # Explicitly create httpx client to prevent SDK from trying to pass proxies
+            # If proxies are needed, they'll be picked up from environment variables
+            httpx_client = httpx.Client()
+            self.client = OpenAI(
+                api_key=config.OPENAI_API_KEY,
+                http_client=httpx_client
+            )
         elif ("deepseek" in model_name):
             from openai import OpenAI
-            self.client = OpenAI(api_key=config.DEEPSEEK_API_KEY, base_url="https://api.deepseek.com/v1")
+            import httpx
+            # Explicitly create httpx client to prevent SDK from trying to pass proxies
+            httpx_client = httpx.Client()
+            self.client = OpenAI(
+                api_key=config.DEEPSEEK_API_KEY,
+                base_url="https://api.deepseek.com/v1",
+                http_client=httpx_client
+            )
             # also prepare openrouter for longer context (deepseek currently limited at 65k)
             from epbench.src.models.misc import no_ssl_verification
             no_ssl_verification()
@@ -18,17 +51,25 @@ class ModelsWrapper:
             self.key = config.OPENROUTER_API_KEY
         elif ("grok" in model_name):
             from openai import OpenAI
-            self.client = OpenAI(api_key=config.XAI_API_KEY, base_url="https://api.x.ai/v1")
+            import httpx
+            # Explicitly create httpx client to prevent SDK from trying to pass proxies
+            httpx_client = httpx.Client()
+            self.client = OpenAI(
+                api_key=config.XAI_API_KEY,
+                base_url="https://api.x.ai/v1",
+                http_client=httpx_client
+            )
             from epbench.src.models.misc import no_ssl_verification
             no_ssl_verification()
         elif "claude-" in model_name:
-            from anthropic import Anthropic, DefaultHttpxClient
+            from anthropic import Anthropic
+            import httpx
+            # For Anthropic, we still need to create a custom client for verify=False
+            # Proxies will be picked up from environment variables if set
+            httpx_client = httpx.Client(verify=False)
             self.client = Anthropic(
                 api_key=config.ANTHROPIC_API_KEY,
-                http_client=DefaultHttpxClient(
-                    proxies=config.PROXY['http'],
-                    verify=False
-                ),
+                http_client=httpx_client,
             )
         elif "gemini" in model_name:
             from epbench.src.models.misc import no_ssl_verification

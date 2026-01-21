@@ -137,20 +137,72 @@ def evaluate_answer(llm_answer: str, correct_answer: Set[str], retrieval_type: s
     
     # Get the judge LLM's evaluation
     judge_response = my_model.generate(user_prompt = judge_prompt, system_prompt = "You are an expert in memory tests.", max_new_tokens = 4096)
+    print("------------response from judge LLM--------------------")
     print(judge_response)
+    print("------------response from judge LLM END----------------")
     
     # Parse the judge's response
+    # First, try to extract JSON from markdown code blocks if present
+    import ast
+    
+    # Remove markdown code blocks (```json ... ``` or ``` ... ```)
+    judge_response_clean = re.sub(r'^```(?:json)?\s*\n', '', judge_response, flags=re.MULTILINE)
+    judge_response_clean = re.sub(r'\n```\s*$', '', judge_response_clean, flags=re.MULTILINE)
+    judge_response_clean = judge_response_clean.strip()
+    
     try:
-        evaluation = json.loads(judge_response)
+        evaluation = json.loads(judge_response_clean)
     except json.JSONDecodeError:
-        print("json decode error, used ast instead")
-        # If JSON parsing fails, use regex to extract the JSON part
-        import re
-        import ast
-        judge_response = re.sub(r'": "', '": """', judge_response)
-        judge_response = re.sub(r'"\n}', '"""\n}', judge_response)
-        evaluation = ast.literal_eval(judge_response)
-        print(judge_response)
+        print("json decode error, trying to extract JSON with regex")
+        # Try to extract JSON object from the response
+        # Find the first { and last } to extract the JSON object
+        start_idx = judge_response_clean.find('{')
+        end_idx = judge_response_clean.rfind('}')
+        
+        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+            json_str = judge_response_clean[start_idx:end_idx + 1]
+            try:
+                evaluation = json.loads(json_str)
+            except json.JSONDecodeError:
+                print("json decode error after extraction, trying ast.literal_eval")
+                # If JSON parsing still fails, use regex to fix string escaping and use ast
+                json_str_fixed = re.sub(r'": "', '": """', json_str)
+                json_str_fixed = re.sub(r'"\n}', '"""\n}', json_str_fixed)
+                try:
+                    evaluation = ast.literal_eval(json_str_fixed)
+                except (SyntaxError, ValueError) as e:
+                    print(f"ast.literal_eval also failed: {e}")
+                    print(f"Cleaned response: {judge_response_clean[:500]}")
+                    raise
+        else:
+            print("Could not find JSON object in response, using ast as last resort")
+            # Last resort: try ast.literal_eval on cleaned response
+            judge_response_fixed = re.sub(r'": "', '": """', judge_response_clean)
+            judge_response_fixed = re.sub(r'"\n}', '"""\n}', judge_response_fixed)
+            try:
+                evaluation = ast.literal_eval(judge_response_fixed)
+            except (SyntaxError, ValueError) as e:
+                print(f"ast.literal_eval failed: {e}")
+                print(f"Original response: {judge_response[:500]}")
+                raise
+    
+    # Normalize matching_score to ensure it's always a list of dictionaries
+    # Handle cases where LLM returns [0] or other non-dict formats when groundtruth is empty
+    if not isinstance(evaluation.get('matching_score'), list):
+        evaluation['matching_score'] = []
+    else:
+        # Filter out non-dictionary items and ensure all items are dictionaries
+        matching_score_normalized = []
+        for item in evaluation['matching_score']:
+            if isinstance(item, dict):
+                matching_score_normalized.append(item)
+            # If item is not a dict (e.g., integer 0), skip it
+            # This handles cases where LLM returns [0] instead of [] for empty groundtruth
+        evaluation['matching_score'] = matching_score_normalized
+    
+    # If correct_answer is empty, matching_score should also be empty
+    if len(correct_answer) == 0:
+        evaluation['matching_score'] = []
         
     return generate_metric_original(correct_answer, evaluation) # keep the original policy there
 
