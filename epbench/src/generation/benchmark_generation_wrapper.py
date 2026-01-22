@@ -29,10 +29,30 @@ from epbench.src.generation.generate_1_events_and_meta_events import generate_un
 from pathlib import Path
 from epbench.src.plots.plotting_functions import plotting_ecdf
 
+from memmachine.episodic_memory.declarative_memory import (
+    ContentType,
+    Episode,
+)
+# Import MM test utils
+import asyncio
+from datetime import datetime, timezone, timedelta
+import time
+from uuid import uuid4
+
+import importlib.util
+utils_path = Path("/home/tomz/retrieval_agent/src/test/episodic_memory/test_utils.py")
+spec = importlib.util.spec_from_file_location("test_utils", utils_path)
+test_utils = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(test_utils)
+
 logger = logging.getLogger(__name__)
 
 class BenchmarkGenerationWrapper:
-    def __init__(
+    def __init__(self):
+            # Dummy since cannot have async __init__
+            pass
+
+    async def init(
             self,
             prompt_parameters = {
                 'nb_events': 20, 
@@ -52,10 +72,12 @@ class BenchmarkGenerationWrapper:
             data_folder = '/Users/jinggong/memmachine/episodic-memory-benchmark/epbench/data',
             env_file = '/Users/jinggong/memmachine/episodic-memory-benchmark/.env',
             verbose = True,
-            rechecking = True
+            rechecking = True,
+            memmachine_ingest = False,
             ):
-        book, df_book_groundtruth, df_qa, df_qa_debug_widespreadness, debug_all_generated_samples = self.__end2end(
-            prompt_parameters, model_parameters, book_parameters, data_folder, env_file, verbose, rechecking)
+        print(f"BenchmarkGenerationWrapper init")
+        book, df_book_groundtruth, df_qa, df_qa_debug_widespreadness, debug_all_generated_samples = await self.__end2end(
+            prompt_parameters, model_parameters, book_parameters, data_folder, env_file, verbose, rechecking, memmachine_ingest)
         self.book = book
         self.df_book_groundtruth = df_book_groundtruth
         self.df_qa = df_qa
@@ -150,7 +172,7 @@ class BenchmarkGenerationWrapper:
             # ddd2[ddd2['get'] == 'all']['n_items_correct_answer'].value_counts()
             
 
-    def __end2end(
+    async def __end2end(
             self,
             prompt_parameters = {
                 'nb_events': 10, 
@@ -170,12 +192,50 @@ class BenchmarkGenerationWrapper:
             data_folder = '/Users/jinggong/memmachine/episodic-memory-benchmark/epbench/data',
             env_file = '/Users/jinggong/memmachine/episodic-memory-benchmark/.env',
             verbose = True,
-            rechecking = True):
+            rechecking = True,
+            memmachine_ingest = False):
 
         # 1) Generate events/meta-events and paragraphs
         events, meta_events = generate_and_export_events_and_meta_events_func(prompt_parameters, data_folder, rechecking)
         generated_paragraphs, has_verif_vector = iterative_generate_paragraphs_func(prompt_parameters, model_parameters, data_folder, env_file, verbose, rechecking)
         d = get_final_samples(prompt_parameters, model_parameters, data_folder, rechecking)  # post-processed events/paragraphs
+
+        if memmachine_ingest:
+            t1 = datetime.now(timezone.utc)
+            added_content = 0
+            total_questions = 0
+            per_batch = 1000
+            index = -1 # 0 start indexing
+            print("Ingesting paragraphs into MemMachine...")
+            for paragraphs in generated_paragraphs:
+                if paragraphs is None:
+                    continue
+                index += 1
+                memory, _, _ = await test_utils.init_memmachine_params(
+                    neo4j_uri="bolt://localhost:8888",
+                    session_id=f"epbench_group",
+                )
+                episodes = []
+                for p in paragraphs:
+                    added_content += 1
+                    ts = t1 + timedelta(minutes=added_content)
+                    episodes.append(
+                        Episode(
+                            uid=str(uuid4()),
+                            timestamp=ts,
+                            source="user",
+                            content_type=ContentType.TEXT,
+                            content=p,
+                        )
+                    )
+                    if added_content % per_batch == 0 or (p == paragraphs[-1]):
+                        print(f"Adding batch of {len(episodes)} episodes...")
+                        t = time.perf_counter()
+                        await memory.add_episodes(episodes=episodes)
+                        print(f"Gathered and added {len(episodes)} episodes in {(time.perf_counter() - t):.3f}s")
+                        print(f"Total added episodes: {added_content}")
+                        episodes = []
+            print(f"Completed adding all paragraphs to MemMachine. Total added: {added_content} paragraphs.")
         
         # 2) Select and order chapters, then build the book
         idx_chapters = book_indexing_func(d, book_parameters) # selection of the events selected as chapter and their ordering

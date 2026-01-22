@@ -13,15 +13,19 @@ from epbench.src.evaluation.generator_answers_3_ftuning import upload_ftuning_in
 from openai import OpenAI
 from epbench.src.models.settings_wrapper import SettingsWrapper
 from scipy.stats import kendalltau
+import asyncio
 
 class EvaluationWrapper:
-    def __init__(
+    def __init__(self):
+            # Dummy init since cannot have async __init__
+            pass
+
+    async def init(
             self,
             my_benchmark: BenchmarkGenerationWrapper,
             answering_parameters = {'kind': 'prompting', 'model_name': 'claude-3-5-sonnet-20240620', 'max_new_tokens': 4096, 'sleeping_time': 15, 'policy': 'original'},
             data_folder = '/repo/to/git/main/epbench/data',
             env_file = '/repo/to/git/main/.env'):
-        
         # save the input
         self.my_benchmark = my_benchmark
         self.data_folder = data_folder
@@ -29,8 +33,8 @@ class EvaluationWrapper:
         self.policy = answering_parameters['policy']
 
         # generated answers
-        if answering_parameters['kind'] == 'prompting':
-            self.df_generated_answers = generate_answers_func(my_benchmark, answering_parameters, data_folder, env_file)
+        if answering_parameters['kind'] == 'prompting' or answering_parameters['kind'] == 'memmachine' or answering_parameters['kind'] == 'retrieval_agent':
+            self.df_generated_answers = await generate_answers_func(my_benchmark, answering_parameters, data_folder, env_file)
         elif answering_parameters['kind'] == 'rag':
             ## [embedding code] -- all this paragraph to save the embedding
             # answering_parameters = {'kind': 'rag', 'model_name': 'claude-3-5-sonnet-20240620', 'max_new_tokens': 4096, 'sleeping_time': 15, 'embedding_chunk': 'chapter', 'embedding_model': "text-embedding-3-small", 'embedding_batch_size': 2048}
@@ -56,7 +60,7 @@ class EvaluationWrapper:
             self.my_embedding['embedding'] = self.my_embedding['embedding'].apply(ast.literal_eval)
             ## [\embedding code] -- the rest as for the 'prompting' kind
             
-            self.df_generated_answers = generate_answers_func(my_benchmark, answering_parameters, data_folder, env_file, self.my_embedding)
+            self.df_generated_answers = await generate_answers_func(my_benchmark, answering_parameters, data_folder, env_file, self.my_embedding)
         elif answering_parameters['kind'] == 'ftuning':
             ## [fine tuning input data code] -- all this paragraph for uploading the jsonl
             
@@ -143,10 +147,10 @@ class EvaluationWrapper:
             # 5. answer the questions
             answering_parameters['model_name'] = answering_parameters['fine_tuned_model_name']
             #print(answering_parameters['model_name'])
-            self.df_generated_answers = generate_answers_func(my_benchmark, answering_parameters, data_folder, env_file)
+            self.df_generated_answers = await generate_answers_func(my_benchmark, answering_parameters, data_folder, env_file)
 
         else:
-            raise ValueError('unknown "kind", should be "prompting", "rag" or "ftuning"')
+            raise ValueError('unknown "kind", should be "prompting", "memmachine", "retrieval_agent", "rag" or "ftuning"')
         
         # generated evaluation (given answers)
         df_generated_evaluations = generate_evaluation_func(my_benchmark, self.df_generated_answers, answering_parameters, data_folder, env_file)
@@ -234,6 +238,9 @@ class EvaluationWrapper:
         # all the samples in which the chronological order can be tested
         chrono_larger_than_one = chrono[chrono['groundtruth_indexes_length'] > 1]
         N = len(chrono_larger_than_one)
+        if N == 0:
+            print("No generted chronological with groundtruth length larger than 1, setting N to 1 to avoid zero division")
+            N = 1
 
         chrono_gt_larger_than_one_with_total_match = chrono_larger_than_one[chrono_larger_than_one['nb_matches'] == chrono_larger_than_one['groundtruth_indexes_length']]
         count_of_total_match = sum(chrono_larger_than_one['nb_matches'] == chrono_larger_than_one['groundtruth_indexes_length']) # % total match

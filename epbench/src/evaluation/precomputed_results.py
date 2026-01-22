@@ -2,7 +2,7 @@ from epbench.src.evaluation.evaluation_wrapper import EvaluationWrapper
 from epbench.src.evaluation.generator_answers_2_rag import get_top_n
 import pandas as pd
 
-def get_precomputed_results(experiments, 
+async def get_precomputed_results(experiments,
                             env_file, 
                             data_folder,
                             all_benchmarks = {'benchmark_claude_default_20': None,
@@ -82,7 +82,7 @@ def get_precomputed_results(experiments,
                                f'Only books generated with `claude-3-5-sonnet-20240620`, `gpt-4o-2024-05-13`, '
                                f'or provide benchmark in all_benchmarks with key `{benchmark_key}`')
 
-        if df_cur['answering_kind'] == 'prompting':
+        if df_cur['answering_kind'] == 'prompting' or df_cur['answering_kind'] == 'memmachine' or df_cur['answering_kind'] == 'retrieval_agent':
             answering_parameters = {'kind': df_cur['answering_kind'],
                                     'model_name': df_cur['answering_model_name'],
                                     'max_new_tokens': 4096,
@@ -129,6 +129,7 @@ def get_precomputed_results(experiments,
         if df_cur['answering_kind'] == 'rag':
             str_print = f"{str_print} ({df_cur['answering_embedding_chunk']} chunks)"
         print(str_print)
-        my_evaluation = EvaluationWrapper(my_benchmark, answering_parameters, data_folder, env_file)
+        my_evaluation = EvaluationWrapper()
+        await my_evaluation.init(my_benchmark, answering_parameters, data_folder, env_file)
         df.loc[i, 'evaluation_object'] = my_evaluation
     return df
