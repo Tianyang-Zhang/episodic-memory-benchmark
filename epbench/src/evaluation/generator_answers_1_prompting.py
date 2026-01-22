@@ -3,13 +3,21 @@ from epbench.src.models.models_wrapper import ModelsWrapper
 from epbench.src.io.io import answer_filepath_func, answer_reasoning_filepath_func, evaluate_filepath_func, chronological_filepath_func, import_list, export_list
 from epbench.src.evaluation.scoring_answers import evaluate_answer, evaluate_chronological
 from epbench.src.generation.benchmark_generation_wrapper import BenchmarkGenerationWrapper
-from epbench.src.evaluation.prompts import generate_episodic_memory_prompt
+from epbench.src.evaluation.prompts import generate_episodic_memory_prompt, generate_episodic_memory_prompt_memmachine
 from epbench.src.evaluation.generator_answers_2_rag import query_message
 from epbench.src.generation.printing import split_chapters_func
 import os
 import pandas as pd
 import re
 import time
+import asyncio
+
+import importlib.util
+from pathlib import Path
+utils_path = Path("/home/tomz/retrieval_agent/src/test/episodic_memory/test_utils.py")
+spec = importlib.util.spec_from_file_location("test_utils", utils_path)
+test_utils = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(test_utils)
 
 def check_and_remove(book, substring, error_if_not_found = True):
     count = book.count(substring)
@@ -83,7 +91,7 @@ def whether_do_this_q(q, q_max):
     else:
         return (q < q_max)
             
-def generate_answers_func(
+async def generate_answers_func(
     my_benchmark: BenchmarkGenerationWrapper,
     answering_parameters = {'kind': 'prompting', 'model_name': 'claude-3-5-sonnet-20240620', 'max_new_tokens': 4096, 'sleeping_time': 15},
     data_folder = '/repo/to/git/main/epbench/data',
@@ -110,47 +118,95 @@ def generate_answers_func(
             book = patch_for_ensuring_token_size_lower_130k_in_llama3(book)
 
     df_qa = my_benchmark.get_df_qa()
+    df_book_groundtruth = my_benchmark.get_df_book_groundtruth()
     nb_chapters = my_benchmark.nb_chapters()
     nb_tokens = my_benchmark.nb_tokens()
 
     # loop
     generated_answers = []
-    for q in range(len(df_qa)):
-        answer_filepath = answer_filepath_func(q, nb_chapters, nb_tokens, data_folder, prompt_parameters, model_parameters, book_parameters, answering_parameters)
-        answer_reasoning_filepath = answer_reasoning_filepath_func(q, nb_chapters, nb_tokens, data_folder, prompt_parameters, model_parameters, book_parameters, answering_parameters)
-        if not answer_filepath.is_file():
+
+    if answering_parameters['kind'] == 'memmachine' or answering_parameters['kind'] == 'retrieval_agent':
+        tasks = []
+        answer_random_prepend_strings = []
+        attribute_matrix = test_utils.init_attribute_matrix()
+        resource_list = []
+        responses: list[tuple[int, dict[str, any]]] = []
+        for q in range(len(df_qa)): # MemMachine or retrieval agent always generate new answers and no reasoning
+            answer_filepath = answer_filepath_func(q, nb_chapters, nb_tokens, data_folder, prompt_parameters, model_parameters, book_parameters, answering_parameters)
             question = df_qa.iloc[q]['question']
             correct_answer = df_qa.iloc[q]['correct_answer']
-            print(f"Generate {str(q)} / {str(len(df_qa)-1)} [{correct_answer}for question {question}]")
-            # only initialize the model if needed, and only initialize it once 
-            try:
-                my_model
-            except NameError:
-                my_model = ModelsWrapper(model_name, config)
-            # generate the content
-            if answering_parameters['kind'] == 'prompting': # context, my_embedding is None
-                user_prompt = generate_episodic_memory_prompt(book, question)
-            elif answering_parameters['kind'] == 'rag': # rag, there is an embedding
-                user_prompt = query_message(question, my_embedding, answering_parameters, env_file)
-            elif answering_parameters['kind'] == 'ftuning':
-                user_prompt = my_benchmark.get_user_prompt_for_finetuning(question)
-            if q == 0:
-                print("[begin example of a prompt]")
-                print(user_prompt)
-                print("[end example of a prompt]")
-            out, reasoning = my_model.generate(user_prompt = user_prompt, system_prompt = system_prompt, max_new_tokens = max_new_tokens, keep_reasoning = True)
-            print(f"sleeping for {sleeping_time} seconds")
-            time.sleep(sleeping_time)
-            print("woke up")
-            answer_filepath.parent.mkdir(parents=True, exist_ok=True)
-            print(answer_filepath)
-            export_list(out, answer_filepath)
-            if reasoning is not None:
-                answer_reasoning_filepath.parent.mkdir(parents=True, exist_ok=True)
-                print(answer_reasoning_filepath)
-                export_list(reasoning, answer_reasoning_filepath)
-        generated_answer = import_list(answer_filepath)
-        generated_answers.append(generated_answer)
+            print(f"Generate({answering_parameters['kind']}) {str(q)} / {str(len(df_qa)-1)} [{correct_answer}for question {question}]")
+            memory, model, query_agent = await test_utils.init_memmachine_params(
+                neo4j_uri="bolt://localhost:8888",
+                session_id=f"epbench_group",
+                agent_name="MemMachineAgent" if answering_parameters['kind'] == 'memmachine' else "ToolSelectAgent",
+            )
+            resource_list.append(memory)
+            tasks.append(
+                test_utils.process_question(
+                    answer_prompt=generate_episodic_memory_prompt_memmachine(),
+                    query_agent=query_agent,
+                    memory=memory,
+                    model=model,
+                    question=question,
+                    answer=correct_answer,
+                    category=0, # TODO: use different categories?
+                    supporting_facts=[],
+                    search_limit=20,
+                    # model_name="gpt-5.2",
+                )
+            )
+
+            if len(tasks) % 10 == 0 or (q == len(df_qa) - 1):
+                responses = await asyncio.gather(*tasks)
+                tasks = []
+                for r in resource_list:
+                    del r
+                resource_list = []
+                # process all responses
+                for _, r in responses:
+                    answer_filepath.parent.mkdir(parents=True, exist_ok=True)
+                    print(answer_filepath)
+                    export_list(r["model_answer"], answer_filepath)
+                    generated_answer = import_list(answer_filepath)
+                    generated_answers.append(generated_answer)
+    else:
+        for q in range(len(df_qa)):
+            answer_filepath = answer_filepath_func(q, nb_chapters, nb_tokens, data_folder, prompt_parameters, model_parameters, book_parameters, answering_parameters)
+            answer_reasoning_filepath = answer_reasoning_filepath_func(q, nb_chapters, nb_tokens, data_folder, prompt_parameters, model_parameters, book_parameters, answering_parameters)
+            if not answer_filepath.is_file():
+                question = df_qa.iloc[q]['question']
+                correct_answer = df_qa.iloc[q]['correct_answer']
+                print(f"Generate {str(q)} / {str(len(df_qa)-1)} [{correct_answer}for question {question}]")
+                # only initialize the model if needed, and only initialize it once
+                try:
+                    my_model
+                except NameError:
+                    my_model = ModelsWrapper(model_name, config)
+                # generate the content
+                if answering_parameters['kind'] == 'prompting': # context, my_embedding is None
+                    user_prompt = generate_episodic_memory_prompt(book, question)
+                elif answering_parameters['kind'] == 'rag': # rag, there is an embedding
+                    user_prompt = query_message(question, my_embedding, answering_parameters, env_file)
+                elif answering_parameters['kind'] == 'ftuning':
+                    user_prompt = my_benchmark.get_user_prompt_for_finetuning(question)
+                if q == 0:
+                    print("[begin example of a prompt]")
+                    print(user_prompt)
+                    print("[end example of a prompt]")
+                out, reasoning = my_model.generate(user_prompt = user_prompt, system_prompt = system_prompt, max_new_tokens = max_new_tokens, keep_reasoning = True)
+                print(f"sleeping for {sleeping_time} seconds")
+                time.sleep(sleeping_time)
+                print("woke up")
+                answer_filepath.parent.mkdir(parents=True, exist_ok=True)
+                print(answer_filepath)
+                export_list(out, answer_filepath)
+                if reasoning is not None:
+                    answer_reasoning_filepath.parent.mkdir(parents=True, exist_ok=True)
+                    print(answer_reasoning_filepath)
+                    export_list(reasoning, answer_reasoning_filepath)
+            generated_answer = import_list(answer_filepath)
+            generated_answers.append(generated_answer)
 
     df_generated_answers = pd.concat([df_qa, pd.DataFrame({'llm_answer':generated_answers})], axis = 1)
 
@@ -210,7 +266,7 @@ def generate_evaluation_func(
             retrieval_type = df_qa2.iloc[q]['retrieval_type']
             get_style = df_qa2.iloc[q]['get']
             print(f"Evaluate {str(q)} / {str(len(df_qa2)-1)} [question {question}]")
-            # only initialize the model if needed, and only initialize it once 
+            # only initialize the model if needed, and only initialize it once
             try:
                 my_model
             except NameError:

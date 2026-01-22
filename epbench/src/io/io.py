@@ -85,7 +85,7 @@ def answer_dir_name_func(answering_parameters = {'kind': 'prompting', 'model_nam
     '''
     Final folder path of the answers
     '''
-    if answering_parameters['kind'] == 'prompting':
+    if answering_parameters['kind'] == 'prompting' or answering_parameters['kind'] == 'memmachine' or answering_parameters['kind'] == 'retrieval_agent':
         kind_str = f"kind_{answering_parameters['kind']}"
         model_str = f"model_{answering_parameters['model_name']}"
         return f"answered_by_{kind_str}_{model_str}"

@@ -31,7 +31,7 @@ def get_short_name2(tuple_input):
         print("uknown model in get_short_name2")
         model_name = tuple_input[1]
         
-    if tuple_input[0] == 'prompting':
+    if tuple_input[0] == 'prompting' or tuple_input[0] == 'memmachine' or tuple_input[0] == 'retrieval_agent':
         output = model_name
     elif tuple_input[0] == 'rag':
         if tuple_input[2] == 'chapter':

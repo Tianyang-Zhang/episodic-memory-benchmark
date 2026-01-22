@@ -12,6 +12,8 @@ import logging  # noqa: E402
 
 from epbench.src.generation.benchmark_generation_wrapper import BenchmarkGenerationWrapper  # noqa: E402
 
+import asyncio
+
 # Set up logging
 logging.basicConfig(
     level=logging.INFO,
@@ -87,8 +89,12 @@ logger.info(f"  - model_parameters: {model_parameters}")
 # Generation (generate the book, then compute the ground truth QAs)
 logger.info("")
 logger.info("Creating BenchmarkGenerationWrapper and generating benchmark...")
-my_benchmark = BenchmarkGenerationWrapper(
-    prompt_parameters, model_parameters, book_parameters, data_folder, env_file)
+my_benchmark = BenchmarkGenerationWrapper()
+asyncio.run(
+    my_benchmark.init(
+        prompt_parameters, model_parameters, book_parameters, data_folder, env_file
+    )
+)
 logger.info("✓ Benchmark generation completed")
 logger.info(f"  - Benchmark object created: {type(my_benchmark).__name__}")
 logger.info(f"  - Benchmark pretty_print_debug_event_idx: {my_benchmark.pretty_print_debug_event_idx()}")

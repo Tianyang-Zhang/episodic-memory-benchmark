@@ -61,7 +61,7 @@ def get_short_name_from_model_name(answering_model_name, answering_kind, answeri
         model_name = answering_model_name
         # raise ValueError('unknown model')
     
-    if answering_kind == 'prompting':
+    if answering_kind == 'prompting' or answering_kind == 'memmachine' or answering_kind == 'retrieval_agent':
         output = model_name
     elif answering_kind == 'rag':
         if answering_embedding_chunk == 'chapter':
